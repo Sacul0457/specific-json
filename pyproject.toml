@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "specific_json"
 version = "0.1.0"
-description = "A json serialisation libary implemented in C"
+description = "A JSON serialisation libary implemented in C"
 requires-python = ">=3.14"
 dependencies = []
 

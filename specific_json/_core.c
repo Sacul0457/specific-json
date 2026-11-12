@@ -1416,7 +1416,6 @@ json_decode(PyObject *self, PyObject *args, PyObject *kwargs)
                 return Py_NewRef(default_value);
             }
         }
-        destroy_json_path(state.path);
     }
     else {
         ret = decode_json_value(&state);
