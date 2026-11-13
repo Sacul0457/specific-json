@@ -34,19 +34,23 @@ See more at [Benchmarks](#Benchmarks).
 > [!IMPORTANT]
 > Regarding the orjson benchmarks, since `specific-json` cannot handle escaped characters yet, the data for all libs had no escaped chars. 
 > 
-> BUT, there were only two escaped characters in one string, so overall performance should not be heavily affected.
+> BUT, only one string had escaped characters, so overall performance should not be heavily affected.
 
 Do take these benchmarks with a pinch of salt, these are results on my machine (Windows) and they have been modified to fit in one file for convenience.
 A more reliable benchmark will be used and uploaded in the future hopefully.
 
 ## Installing
-Only **Windows** is on [Pypi](https://pypi.org/manage/project/specific-json/releases/) as of now. Soon there will be linux and macos support.
+**All major platforms** are supported on [Pypi](https://pypi.org/manage/project/specific-json/releases/)!
 
 > [!NOTE]
 > Python 3.14 is required (for now)
 
 ```sh
+#windows
 py -3.14 -m pip install -U specific-json
+
+#linux/macos
+python3.14 -m pip install -U specific-json
 ```
 
 ## Compiling
