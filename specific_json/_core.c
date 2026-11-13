@@ -542,7 +542,10 @@ dict_get_string(DecoderState *state, const PathToken *token, const bool decode, 
             goto error;
         }
 
-        if (x != '"') {
+        if (x == '}') {
+            goto key_error;
+        }
+        else if (x != '"') {
             state->pos++;
             continue;
         }
@@ -604,6 +607,15 @@ no_escaped:
 escaped:
     *err = false;
     PyErr_Format(PyExc_ValueError, "Encountered an escape character: %.200s", state->pos);
+    return NULL;
+
+key_error:
+    *err = false;
+    char token_buffer[51];
+    const size_t length = Py_MIN(token->key.length, 50);
+    memcpy(token_buffer, token->key.data, length);
+    token_buffer[length] = '\0';
+    PyErr_Format(PyExc_KeyError, "%s", token_buffer);
     return NULL;
 
 end_of_buffer:
@@ -1407,12 +1419,13 @@ json_decode(PyObject *self, PyObject *args, PyObject *kwargs)
                 return NULL;
             }
     
-            PyObject *default_value = PyDict_GetItemString(kwargs, "attrs");
+            PyObject *default_value = PyDict_GetItemString(kwargs, "default");
             if (default_value == NULL) {
                 return NULL;
             }
 
-            if (PyErr_GivenExceptionMatches(error, PyExc_ValueError) || PyErr_GivenExceptionMatches(error, PyExc_IndexError)) {
+            if (PyErr_GivenExceptionMatches(error, PyExc_KeyError) || PyErr_GivenExceptionMatches(error, PyExc_IndexError)) {
+                PyErr_Clear();
                 return Py_NewRef(default_value);
             }
         }
@@ -1448,7 +1461,7 @@ json_debug_stats(PyObject *self, PyObject *args)
 
 
 static PyMethodDef methods[] = {
-    {"json_decode", (PyCFunction)json_decode, METH_VARARGS, "Decode a json str object"},
+    {"json_decode", (PyCFunction)json_decode, METH_VARARGS | METH_KEYWORDS, "Decode a json str object"},
     {"json_debug_stats", (PyCFunction)json_debug_stats, METH_VARARGS, "Debug stats"},
     {NULL, NULL, 0, NULL}
 };

@@ -6,8 +6,21 @@ on:
 
 jobs:
   build:
-    name: Build Windows wheel
-    runs-on: windows-latest
+    name: Build ${{ matrix.os }} wheels
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            cibw-build: "cp314-win_amd64"
+          - os: ubuntu-latest
+            cibw-build: "cp314-manylinux_x86_64"
+          - os: macos-latest
+            cibw-build: "cp314-macosx_*_arm64 cp314-macosx_*_x86_64"
+          - os: ubuntu-24.04-arm
+            cibw-build: "cp314-manylinux_aarch64"
 
     steps:
       - name: Checkout
@@ -21,15 +34,15 @@ jobs:
       - name: Install cibuildwheel
         run: python -m pip install cibuildwheel
 
-      - name: Build wheel
+      - name: Build wheels
         run: python -m cibuildwheel --output-dir dist
         env:
-          CIBW_BUILD: "cp314-*"
+          CIBW_BUILD: ${{ matrix.cibw-build }}
 
-      - name: Upload wheel
+      - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: windows-wheel
+          name: wheels-${{ matrix.os }}
           path: dist/*.whl
 
   build-sdist:

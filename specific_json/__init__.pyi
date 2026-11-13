@@ -2,10 +2,9 @@ from __future__ import annotations
 from typing import Any
 
 
-def json_decode(json_str: str | bytes, *attrs: str | int, default: Any =None) -> Any:
+def json_decode(json_str: str | bytes, *attrs: str | int, default: Any = None) -> Any:
     """
     Decode a json object into a python object.
-    Raises
 
     Parameters
     -----------
@@ -19,9 +18,22 @@ def json_decode(json_str: str | bytes, *attrs: str | int, default: Any =None) ->
         If `attrs` is `("key", "1")`, it will return "c".
         Note that strings are for dict/object keys and indexes are for arrays/lists.
 
-        Raises a value error (or returns default) if no value could be found.
+        Raises an error (or returns default) if no value could be found.
 
     default: `Any`
-        This can only be set when `attrs` is also set.
-        Returns this value if :exec:`ValueError` or :exec:`IndexError` is raised.
+        This is only used when `attrs` is also set. Else, it is ignored.
+        Returns this value if :exec:`KeyError` or :exec:`IndexError` is raised.
+        It does **not** supress invalid JSON syntax.
+
+
+    Raises
+    -------
+    :exec:`ValueError`
+        - `json_str` is not a `str` or `bytes`
+        -  Invalid JSON syntax is encountered.
+        - `attrs` is not one of `str` or `int` if provided.
+    :exec:`IndexError`
+        - `attrs` provides an index out of range and a default is not provided.
+    :exec:`KeyError`
+        - `attrs` provides a key that is not found and a default is not provided.
     """
