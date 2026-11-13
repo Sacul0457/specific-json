@@ -18,7 +18,7 @@ jobs:
           - os: ubuntu-latest
             cibw-build: "cp314-manylinux_x86_64"
           - os: macos-latest
-            cibw-build: "cp314-macosx_*_arm64 cp314-macosx_*_x86_64"
+            cibw-build: "cp314-*"
           - os: ubuntu-24.04-arm
             cibw-build: "cp314-manylinux_aarch64"
 
@@ -38,6 +38,7 @@ jobs:
         run: python -m cibuildwheel --output-dir dist
         env:
           CIBW_BUILD: ${{ matrix.cibw-build }}
+          CIBW_ARCHS_MACOS: "x86_64 arm64"
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
