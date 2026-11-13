@@ -14,13 +14,13 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            cibw-build: "cp314-win_amd64"
+            cibw-build: "cp{312,313,314,315}-win_amd64"
           - os: ubuntu-latest
-            cibw-build: "cp314-manylinux_x86_64"
+            cibw-build: "cp{312,313,314,315}-manylinux_x86_64"
           - os: macos-latest
-            cibw-build: "cp314-*"
+            cibw-build: "cp{312,313,314,315}-*"
           - os: ubuntu-24.04-arm
-            cibw-build: "cp314-manylinux_aarch64"
+            cibw-build: "cp{312,313,314,315}-manylinux_aarch64"
 
     steps:
       - name: Checkout

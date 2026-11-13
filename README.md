@@ -43,20 +43,20 @@ A more reliable benchmark will be used and uploaded in the future hopefully.
 **All major platforms** are supported on [Pypi](https://pypi.org/manage/project/specific-json/releases/)!
 
 > [!NOTE]
-> Python 3.14 is required (for now)
+> Python 3.12+ is required!
 
 ```sh
 #windows
-py -3.14 -m pip install -U specific-json
+py -m pip install -U specific-json
 
 #linux/macos
-python3.14 -m pip install -U specific-json
+python3 -m pip install -U specific-json
 ```
 
 ## Compiling
 If you want to build this yourself, run this command to compile the extension in the root directory.
 ```
-py -3.14 setup.py build_ext --inplace
+py setup.py build_ext --inplace
 ```
 
 ## Example

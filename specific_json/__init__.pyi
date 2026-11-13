@@ -2,9 +2,13 @@ from __future__ import annotations
 from typing import Any
 
 
-def json_decode(json_str: str | bytes, *attrs: str | int, default: Any = None) -> Any:
+def json_decode(json_str: str | bytes, /, *attrs: str | int,  default: Any = None) -> Any:
     """
     Decode a json object into a python object.
+
+    **Note**: Values that are NOT needed to find `attrs` are not validated and hence can be invalid.
+    For example, `{"key": ['value'], abc}` and `attrs` is `("key", 0)`. Even though `abc` is invalid,
+    it will NOT be checked and no error will be raised.
 
     Parameters
     -----------

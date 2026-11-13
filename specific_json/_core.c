@@ -37,16 +37,10 @@ typedef struct {
 } JsonPath;
 
 typedef struct {
-    const char *start;
     const char *pos;
     const char *end;
-
     JsonPath *path; // may or may not be NULL
 } DecoderState;
-
-
-
-#define KEY_MAX_LENGTH 32
 
 
 // Inspired by: https://github.com/msgspec/msgspec/blob/main/src/msgspec/_core.c#L17862 && https://github.com/msgspec/msgspec/blob/main/src/msgspec/_core.c#L159
@@ -58,6 +52,35 @@ typedef struct {
             state->pos += (i);                                      \
             goto no_escaped;                                        \
         }                                                           \
+        else if (c > 0x7F) {                                        \
+            is_ascii = false;                                       \
+        }                                                           \
+        else if (c == '\\') {                                       \
+            state->pos += (i);                                      \
+            goto escaped;                                           \
+        }                                                           \
+        else if (c < 0x20) {                                        \
+            goto invalid_ctrl_char;                                 \
+        }                                                           \
+    } while (0);
+
+#define CHECK_ASCII_BYTE_WHEN_SKIPPING(i)                           \
+    do {                                                            \
+        const unsigned char c = (unsigned char)state->pos[(i)];     \
+        if (c == '"') {                                             \
+            state->pos += (i);                                      \
+            goto no_escaped;                                        \
+        }                                                           \
+        else if (c > 0x7F) {                                        \
+            const char *next = validate_nonascii(                   \
+                state->pos + (i), state->end);                      \
+            if (next == NULL) {                                     \
+                PyErr_SetString(PyExc_ValueError, "Invalid UTF-8"); \
+                return false;                                       \
+            }                                                       \
+            state->pos = next;                                      \
+            goto restart_scan;                                      \
+        }                                                           \
         else if (c == '\\') {                                       \
             state->pos += (i);                                      \
             goto escaped;                                           \
@@ -68,13 +91,70 @@ typedef struct {
     } while (0);
 
 
+// disclaimer: The core of this function was mostly written by ChatGPT - Just look at it...
+static inline const char *
+validate_nonascii(const char *s, const char *end)
+{
+    while (s < end) {
+        unsigned char c = *s++;
+
+        if (c < 0x80) {
+            // return when we encounter ASCII
+            return s - 1;
+        }
+
+        uint32_t cp;
+        uint32_t min;
+        size_t n;
+
+        if (c >= 0xC2 && c <= 0xDF) {
+            cp = c & 0x1F;
+            min = 0x80;
+            n = 1;
+        }
+        else if (c >= 0xE0 && c <= 0xEF) {
+            cp = c & 0x0F;
+            min = 0x800;
+            n = 2;
+        }
+        else if (c >= 0xF0 && c <= 0xF4) {
+            cp = c & 0x07;
+            min = 0x10000;
+            n = 3;
+        }
+        else {
+            return NULL;
+        }
+
+        if ((size_t)(end - s) < n) {
+            return NULL;
+        }
+
+        while (n--) {
+            c = *s++;
+
+            if ((c & 0xC0) != 0x80) {
+                return NULL;
+            }
+
+            cp = (cp << 6) | (c & 0x3F);
+        }
+
+        if (cp < min || cp > 0x10FFFF ||
+            (cp >= 0xD800 && cp <= 0xDFFF)) {
+            return NULL;
+        }
+    }
+    return s;
+}
+
 
 static inline bool
-get_jsonpath_from_args(JsonPath *path, PyObject *args, const Py_ssize_t nargs)
+get_jsonpath_from_args(JsonPath *path, PyObject *const *args, const Py_ssize_t nattrs)
 {
-    assert(nargs > 1 && path != NULL && args != NULL);
+    assert(nattrs > 0 && path != NULL && args != NULL);
 
-    PathToken *tokens = PyMem_RawMalloc(sizeof(PathToken) * (nargs - 1));
+    PathToken *tokens = PyMem_RawMalloc(sizeof(PathToken) * nattrs);
     if (tokens == NULL) {
         PyErr_NoMemory();
         return false;
@@ -82,10 +162,9 @@ get_jsonpath_from_args(JsonPath *path, PyObject *args, const Py_ssize_t nargs)
 
 
     Py_ssize_t i;
-    for (i = 1; i < nargs; i++) {
-        PyObject *arg = PySequence_Fast_GET_ITEM(args, i);
-
-        PathToken *token = &tokens[i-1];
+    for (i = 0; i < nattrs; i++) {
+        PyObject *arg = args[i + 1];
+        PathToken *token = &tokens[i];
         if (PyUnicode_Check(arg)) {
             token->tp = JS_TOKEN_KEY;
             token->key.data = NULL; // initalise
@@ -120,7 +199,7 @@ get_jsonpath_from_args(JsonPath *path, PyObject *args, const Py_ssize_t nargs)
 
     path->tokens = tokens;
     path->curr_index = 0;
-    path->size = nargs -1;
+    path->size = nattrs;
     return true;
 
 error:
@@ -154,13 +233,12 @@ destroy_json_path(JsonPath *path)
         if (token->tp == JS_TOKEN_KEY) {
             PyMem_RawFree(token->key.data);
         }
-
     }
-
     PyMem_RawFree(path->tokens);
 }
 
 
+#define KEY_MAX_LENGTH 32
 #define KEY_CACHE_SIZE 64
 static PyObject *dict_key_cache[KEY_CACHE_SIZE]; // store keys that are less than 32 in size/length
 
@@ -184,6 +262,9 @@ Unc_object_from_ascii_nonascii_nonescape_string(const char *string, const Py_ssi
     PyObject *key = NULL;
     if (is_ascii) {
         key = PyUnicode_New(length, 127);
+        if (key == NULL) {
+            return NULL;
+        }
         memcpy(PyUnicode_1BYTE_DATA(key), string, length);
     }
     else {
@@ -306,18 +387,20 @@ skip_string(DecoderState *state)
     assert(state);
     state->pos++;  // Skip opening quote.
 
+
+restart_scan:
     while (state->end - state->pos >= 8) {
-        REPEAT8(CHECK_ASCII_BYTE);
+        REPEAT8(CHECK_ASCII_BYTE_WHEN_SKIPPING);
         state->pos += 8;
     }
 
     // Handle remaining bytes.
     while (state->pos < state->end) {
-        CHECK_ASCII_BYTE(0);
+        CHECK_ASCII_BYTE_WHEN_SKIPPING(0);
         state->pos++;
     }
 
-    PyErr_SetString(PyExc_ValueError, "Reached end of buffer");
+    PyErr_SetString(PyExc_ValueError, "String is not closed");
     return false;
 
 no_escaped:
@@ -410,7 +493,7 @@ skip_list(DecoderState *state)
         }
     }
 
-    PyErr_SetString(PyExc_ValueError, "Reached end of buffer");
+    PyErr_SetString(PyExc_ValueError, "Array is not closed");
     return false;
 }
 
@@ -476,7 +559,7 @@ skip_dict(DecoderState *state)
         }
     }
 
-    PyErr_SetString(PyExc_ValueError, "Reached end of buffer");
+    PyErr_SetString(PyExc_ValueError, "Object is not closed");
     return false;
 }
 
@@ -553,21 +636,20 @@ dict_get_string(DecoderState *state, const PathToken *token, const bool decode, 
         state->pos++; // skip staring quote
         const char *start = state->pos;
 
+restart_scan:
         while (state->end - state->pos >= 8) {
-            REPEAT8(CHECK_ASCII_BYTE);
+            REPEAT8(CHECK_ASCII_BYTE_WHEN_SKIPPING);
             state->pos += 8;
         }
 
         /* Handle remaining bytes. */
         while (state->pos < state->end) {
-            CHECK_ASCII_BYTE(0);
+            CHECK_ASCII_BYTE_WHEN_SKIPPING(0);
             state->pos++;
         }
-        
 
-        if (state->pos >= state->end) {
-            goto end_of_buffer;
-        }
+        PyErr_SetString(PyExc_ValueError, "String is not closed");
+        return NULL;
 
 no_escaped:
         const size_t length = state->pos - start;
@@ -616,11 +698,6 @@ key_error:
     memcpy(token_buffer, token->key.data, length);
     token_buffer[length] = '\0';
     PyErr_Format(PyExc_KeyError, "%s", token_buffer);
-    return NULL;
-
-end_of_buffer:
-    *err = false;
-    PyErr_SetString(PyExc_ValueError, "Reached end of buffer");
     return NULL;
 
 invalid_ctrl_char:
@@ -695,7 +772,7 @@ list_get_index(DecoderState *state, const Py_ssize_t index_to_match, const bool 
 
 
     *err = false;
-    PyErr_SetString(PyExc_ValueError, "Reached end of buffer");
+    PyErr_SetString(PyExc_ValueError, "Array is not closed");
     return NULL;
 
 index_error:
@@ -715,7 +792,6 @@ parse_string_key(DecoderState *state)
     const char *start = state->pos;
     bool is_ascii = true;
 
-parse_start:
     while (state->end - state->pos >= 8) {
         REPEAT8(CHECK_ASCII_BYTE);
         state->pos += 8;
@@ -727,7 +803,7 @@ parse_start:
         state->pos++;
     }
 
-    PyErr_SetString(PyExc_ValueError, "Reached end of buffer");
+    PyErr_SetString(PyExc_ValueError, "String is not closed");
     return NULL;
 
 no_escaped:
@@ -768,7 +844,7 @@ parse_string_value(DecoderState *state)
         state->pos++;
     }
 
-    PyErr_SetString(PyExc_ValueError, "Reached end of buffer");
+    PyErr_SetString(PyExc_ValueError, "String is not closed");
     return NULL;
 
 no_escaped:
@@ -820,7 +896,7 @@ parse_int64(DecoderState *state, int64_t *i64, uint64_t *u64, char **new_pos)
         p++;
         // Leading zeroes
         if (p < end && IS_DIGIT(*p)) {
-            PyErr_SetString(PyExc_MemoryError, "Leading zeros are not allowed");
+            PyErr_SetString(PyExc_ValueError, "Leading zeros are not allowed");
             return -1;
         }
     }
@@ -1321,21 +1397,21 @@ decode_json_value(DecoderState *state)
         case 't':
             length = 4;
             if (end - p < length || memcmp(p, "true", length))
-                return NULL;
+                goto error;
             ret = Py_True;
             break;
 
         case 'f':
             length = 5;
             if (end - p < length || memcmp(p, "false", length))
-                return NULL;
+                goto error;
             ret = Py_False;
             break;
 
         case 'n':
             length = 4;
             if (end - p < length || memcmp(p, "null", length))
-                return NULL;
+                goto error;
             ret = Py_None;
             break;
 
@@ -1350,6 +1426,10 @@ decode_json_value(DecoderState *state)
 
     // true - false - null
     state->pos += length;
+    if (!is_valid_number_keyword_delimiter(state->pos, state->end)) {
+        PyErr_Format(PyExc_ValueError, "Invalid keyword delimiter '%c'", *state->pos);
+        return NULL;
+    }
 
 #if PY312_PLUS
     return ret;
@@ -1357,18 +1437,69 @@ decode_json_value(DecoderState *state)
     // Singletons are not immortal in < 3.12
     return Py_NewRef(ret);
 #endif
+
+
+error:
+    PyErr_Format(PyExc_ValueError, "Invalid character '%c'", *p);
+    return NULL;
+}
+
+static inline int
+get_default_value(PyObject *const *args, const Py_ssize_t nargs, PyObject *kwnames, PyObject **default_value)
+{
+    Py_ssize_t nkwargs = kwnames ? PyTuple_GET_SIZE(kwnames) : 0;
+
+    for (Py_ssize_t i = 0; i < nkwargs; i++) {
+        PyObject *name = PyTuple_GET_ITEM(kwnames, i);
+        PyObject *value = args[nargs + i];
+
+        if (PyUnicode_CompareWithASCIIString(name, "default") == 0) {
+            *default_value = value;
+            return 1;
+        }
+        else {
+            PyErr_Format(PyExc_TypeError, "unexpected keyword argument");
+            return -1;
+        }
+    }
+    return 0;
 }
 
 
-static PyObject *
-json_decode(PyObject *self, PyObject *args, PyObject *kwargs)
+static inline PyObject *
+ensure_no_trailing_data(DecoderState *state, PyObject *ret)
 {
-    const Py_ssize_t nargs = PyTuple_Size(args);
+    while (state->pos < state->end) {
+        const unsigned char curr_char = *state->pos;
+        if (curr_char == ' ' || curr_char == '\n' || curr_char == '\t' || curr_char == '\r') {
+            state->pos++;
+        }
+        else {
+            Py_DECREF(ret);
+            PyErr_SetString(PyExc_ValueError, "Trailing data");
+            return NULL;
+        }
+    }
+
+    return ret;
+}
+
+static PyObject *
+json_decode(PyObject *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames)
+{
     if (nargs < 1) {
         PyErr_Format(PyExc_TypeError, "expected at least 1 argument, got %zd instead", nargs);
         return NULL;
     }
-    PyObject *to_decode = PyTuple_GET_ITEM(args, 0);
+
+    PyObject *default_value = NULL;
+    int status = get_default_value(args, nargs, kwnames, &default_value);
+    if (status == -1) {
+        // Error while parsing kwargs
+        return NULL;
+    }
+
+    PyObject *to_decode = args[0];
 
     const char *json_str = NULL;
     Py_ssize_t length = 0;
@@ -1391,11 +1522,12 @@ json_decode(PyObject *self, PyObject *args, PyObject *kwargs)
     }
 
     const char *end = json_str + length;
-    DecoderState state = {.start = json_str, .pos = json_str, .end = end, .path=NULL};
+    DecoderState state = {.pos = json_str, .end = end, .path=NULL};
     JsonPath path;
 
     if (nargs > 1) {
-        if (!get_jsonpath_from_args(&path, args, nargs)) {
+        // -1 to exclude json_str
+        if (!get_jsonpath_from_args(&path, args, nargs - 1)) {
             return NULL;
         }
         state.path = &path;
@@ -1408,30 +1540,27 @@ json_decode(PyObject *self, PyObject *args, PyObject *kwargs)
     }
 
 
-    PyObject *ret;
-    if (state.path != NULL) {
-        ret = json_search_path(&state);
-        destroy_json_path(state.path);
-
-        if (kwargs != NULL) {
-            PyObject *error = PyErr_Occurred();
-            if (error == NULL) {
-                return NULL;
-            }
-    
-            PyObject *default_value = PyDict_GetItemString(kwargs, "default");
-            if (default_value == NULL) {
-                return NULL;
-            }
-
-            if (PyErr_GivenExceptionMatches(error, PyExc_KeyError) || PyErr_GivenExceptionMatches(error, PyExc_IndexError)) {
-                PyErr_Clear();
-                return Py_NewRef(default_value);
-            }
-        }
-    }
-    else {
+    PyObject *ret = NULL;
+    if (state.path == NULL) {
         ret = decode_json_value(&state);
+        if (ret == NULL) {
+            return NULL;
+        }
+        return ensure_no_trailing_data(&state, ret);
+    }
+
+
+    ret = json_search_path(&state);
+    destroy_json_path(state.path);
+
+
+    if (status == 1 && ret == NULL) {
+        // a default value was provided and an error occurred
+        PyObject *error = PyErr_Occurred();
+        if (error != NULL && (PyErr_GivenExceptionMatches(error, PyExc_KeyError) || PyErr_GivenExceptionMatches(error, PyExc_IndexError))) {
+            PyErr_Clear();
+            return Py_NewRef(default_value);
+        }
     }
 
     return ret;
@@ -1461,7 +1590,7 @@ json_debug_stats(PyObject *self, PyObject *args)
 
 
 static PyMethodDef methods[] = {
-    {"json_decode", (PyCFunction)json_decode, METH_VARARGS | METH_KEYWORDS, "Decode a json str object"},
+    {"json_decode", (PyCFunction)json_decode, METH_FASTCALL | METH_KEYWORDS, "Decode a json str object"},
     {"json_debug_stats", (PyCFunction)json_debug_stats, METH_VARARGS, "Debug stats"},
     {NULL, NULL, 0, NULL}
 };
